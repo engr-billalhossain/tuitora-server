@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "seed": "node scripts/seed.mjs"
+    "seed": "node scripts/seed.mjs",
+    "setup:vercel": "node scripts/setup-vercel-env.mjs"
   },
   "keywords": [],
   "author": "",

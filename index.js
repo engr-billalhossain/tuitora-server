@@ -37,32 +37,37 @@ app.use(
 app.use(express.json({ limit: "40mb" }));
 
 /* --------------------------------- mongo --------------------------------- */
+// LAZY CONNECTION (important for Vercel):
+// A top-level `await connectToMongoDB()` used to throw at module load whenever
+// Atlas was unreachable, which made Vercel return a generic
+// 500 FUNCTION_INVOCATION_FAILED. Now the client is created once per serverless
+// container and connects on the first request that actually needs the DB.
 const uri =
   process.env.MONGODB_URI ||
-  `mongodb+srv://${process.env.DB_USER || ""}:${process.env.DB_PASSWORD || ""}@cluster0.xdlqhda.mongodb.net/`;
+  `mongodb+srv://${encodeURIComponent(process.env.DB_USER || "")}:${encodeURIComponent(process.env.DB_PASSWORD || "")}@cluster0.xdlqhda.mongodb.net/?retryWrites=true&w=majority`;
 
-const client = new MongoClient(uri);
+let client;
+let dbPromise;
 
-async function connectToMongoDB() {
-  try {
-    await client.connect();
-    console.log("You successfully connected to MongoDB!");
-    return client;
-  } catch (err) {
-    console.error("MongoDB connection failed:", err);
-    throw err;
+async function getDb() {
+  if (!dbPromise) {
+    dbPromise = (async () => {
+      client = new MongoClient(uri, { serverSelectionTimeoutMS: 8000 });
+      await client.connect();
+      console.log("You successfully connected to MongoDB!");
+      const database = client.db("tuitoradb");
+      await database
+        .collection("favorites")
+        .createIndex({ userId: 1, tuitionId: 1 }, { unique: true });
+      return database;
+    })().catch((err) => {
+      dbPromise = null; // allow a retry on the next request
+      console.error("MongoDB connection failed:", err);
+      throw err;
+    });
   }
+  return dbPromise;
 }
-
-const connectedClient = await connectToMongoDB();
-const db = connectedClient.db("tuitoradb");
-const users = db.collection("user");
-const courses = db.collection("courses");
-const bookings = db.collection("bookings");
-const reviews = db.collection("reviews");
-const favorites = db.collection("favorites");
-
-await favorites.createIndex({ userId: 1, tuitionId: 1 }, { unique: true });
 
 /* -------------------------------- helpers -------------------------------- */
 function escapeRegex(value) {
@@ -180,6 +185,8 @@ app.get("/me", verifyToken, (req, res) => {
  */
 app.get("/courses", async (req, res) => {
   try {
+    const db = await getDb();
+    const courses = db.collection("courses");
     const filter = buildCourseFilter(req.query);
     const wantsPagination =
       req.query.page !== undefined || req.query.limit !== undefined;
@@ -245,6 +252,8 @@ app.get("/courses", async (req, res) => {
 
 app.get("/courses/:id", async (req, res) => {
   try {
+    const db = await getDb();
+    const courses = db.collection("courses");
     const { id } = req.params;
     const query = { $or: [{ _id: id }] };
     const { ObjectId } = await import("mongodb");
@@ -260,6 +269,8 @@ app.get("/courses/:id", async (req, res) => {
 /** POST /courses — tutors/admin only; identity comes from the verified token. */
 app.post("/courses", verifyToken, verifyTutor, async (req, res) => {
   try {
+    const db = await getDb();
+    const courses = db.collection("courses");
     const body = req.body || {};
     for (const key of [
       "title",
@@ -303,6 +314,8 @@ app.post("/courses", verifyToken, verifyTutor, async (req, res) => {
 /** Admin moderation. */
 app.patch("/courses/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
+    const db = await getDb();
+    const courses = db.collection("courses");
     const { id } = req.params;
     const { ObjectId } = await import("mongodb");
     const query = { $or: [{ _id: id }] };
@@ -337,6 +350,8 @@ app.patch("/courses/:id", verifyToken, verifyAdmin, async (req, res) => {
 
 app.delete("/courses/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
+    const db = await getDb();
+    const courses = db.collection("courses");
     const { id } = req.params;
     const { ObjectId } = await import("mongodb");
     const query = { $or: [{ _id: id }] };
@@ -353,6 +368,8 @@ app.delete("/courses/:id", verifyToken, verifyAdmin, async (req, res) => {
 /** User directory — admin only. */
 app.get("/users", verifyToken, verifyAdmin, async (_req, res) => {
   try {
+    const db = await getDb();
+    const users = db.collection("user");
     const result = await users
       .find({}, { projection: { password: 0 } })
       .toArray();
@@ -413,6 +430,8 @@ app.post("/api/upload", verifyToken, async (req, res) => {
 /* --------------------------- student favourites -------------------------- */
 app.get("/api/favorites", verifyStudent, async (req, res) => {
   try {
+    const db = await getDb();
+    const favorites = db.collection("favorites");
     const items = await favorites
       .find({ userId: req.user.id })
       .sort({ createdAt: -1 })
@@ -425,6 +444,8 @@ app.get("/api/favorites", verifyStudent, async (req, res) => {
 
 app.post("/api/favorites", verifyStudent, async (req, res) => {
   try {
+    const db = await getDb();
+    const favorites = db.collection("favorites");
     const tuitionId = String(req.body?.tuitionId || "").trim();
     if (!tuitionId)
       return res.status(400).json({ error: "tuitionId is required" });
@@ -441,6 +462,8 @@ app.post("/api/favorites", verifyStudent, async (req, res) => {
 
 app.delete("/api/favorites", verifyStudent, async (req, res) => {
   try {
+    const db = await getDb();
+    const favorites = db.collection("favorites");
     const tuitionId = String(req.body?.tuitionId || "").trim();
     if (!tuitionId)
       return res.status(400).json({ error: "tuitionId is required" });
@@ -454,6 +477,8 @@ app.delete("/api/favorites", verifyStudent, async (req, res) => {
 /* ---------------- accepted-student reviews (bonus feature) --------------- */
 app.get("/reviews", async (req, res) => {
   try {
+    const db = await getDb();
+    const reviews = db.collection("reviews");
     const query = {};
     if (req.query.scope === "mine") {
       if (!req.headers.authorization) {
@@ -478,6 +503,9 @@ app.get("/reviews", async (req, res) => {
 
 app.post("/reviews", verifyToken, verifyStudent, async (req, res) => {
   try {
+    const db = await getDb();
+    const reviews = db.collection("reviews");
+    const bookings = db.collection("bookings");
     const { tuitionId, rating, comment } = req.body || {};
     const stars = Number(rating);
     const text = String(comment || "").trim();
@@ -529,7 +557,7 @@ app.post("/reviews", verifyToken, verifyStudent, async (req, res) => {
 /* ------------------- admin-only demo data seeding endpoint --------------- */
 app.post("/api/seed", verifyToken, verifyAdmin, async (_req, res) => {
   try {
-    const summary = await seedDemoData(db);
+    const summary = await seedDemoData(await getDb());
     return res.json({ ok: true, ...summary });
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -537,8 +565,13 @@ app.post("/api/seed", verifyToken, verifyAdmin, async (_req, res) => {
 });
 
 /* --------------------------------- start --------------------------------- */
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+// Vercel imports the exported app and invokes it as a serverless function, so
+// opening a local HTTP server there would be pointless (and can break the
+// deployment). Locally — `npm start` / `npm run dev` — we still listen normally.
+if (process.env.VERCEL !== "1") {
+  app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+  });
+}
 
-export { app, db, client };
+export { app, getDb, client };
