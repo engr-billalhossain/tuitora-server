@@ -1,10 +1,12 @@
 {
   "name": "tuitora-backend",
   "version": "1.0.0",
-  "description": "",
+  "description": "Tuitora REST API — JWT roles, server-side search, ImgBB uploads",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "seed": "node scripts/seed.mjs"
   },
   "keywords": [],
   "author": "",
