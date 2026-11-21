@@ -574,4 +574,5 @@ if (process.env.VERCEL !== "1") {
   });
 }
 
+export default app;
 export { app, getDb, client };
